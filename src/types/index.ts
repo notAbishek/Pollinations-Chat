@@ -161,6 +161,9 @@ export interface AppSettings {
   autoReadBalance: boolean;
   selectedModel: string;
   systemPrompt: string;
+  temperature: number;
+  creativity: number;
+  enablePromptEnhancement: boolean;
   theme: 'dark';
 }
 

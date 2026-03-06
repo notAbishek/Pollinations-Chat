@@ -32,6 +32,11 @@ import {
 } from '../lib/pollinations';
 import { estimateTokens, getTokenMeterColor } from '../lib/tokenizer';
 import { computePollenCost, hasSufficientPollen, formatPollen } from '../lib/pollenMath';
+import {
+  buildEnhancedPrompt,
+  computeEffectiveTemperature,
+  shouldEnhancePrompt,
+} from '../lib/promptEnhancement';
 import { getSettings, saveSettings as persistSettings } from '../lib/storage';
 import { useLocalSession } from '../hooks/useLocalSession';
 import { useTokenMeter } from '../hooks/useTokenMeter';
@@ -85,6 +90,9 @@ export default function ChatPage({
     autoReadBalance: true,
     selectedModel: 'openai',
     systemPrompt: '',
+    temperature: 0.7,
+    creativity: 0.5,
+    enablePromptEnhancement: false,
     theme: 'dark',
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -369,11 +377,19 @@ export default function ChatPage({
     // Build context
     const apiMessages: { role: string; content: string | Array<{ type: string;[k: string]: unknown }> }[] = [];
 
+    const enhancementEnabled = shouldEnhancePrompt(
+      settings.enablePromptEnhancement,
+      effectiveMode,
+    );
+
     // Always inject a markdown formatting instruction
     const markdownInstruction = 'Format your responses using Markdown. Use headings, bullet points, numbered lists, code blocks with language tags, bold, italic, tables, and other Markdown formatting as appropriate to make responses clear and well-structured.';
+    const enhancementInstruction = enhancementEnabled
+      ? 'When possible, improve prompt clarity, infer missing structure, and provide a concise, high-quality answer while preserving the user\'s intent.'
+      : '';
     const systemContent = settings.systemPrompt
-      ? `${settings.systemPrompt}\n\n${markdownInstruction}`
-      : markdownInstruction;
+      ? [settings.systemPrompt, markdownInstruction, enhancementInstruction].filter(Boolean).join('\n\n')
+      : [markdownInstruction, enhancementInstruction].filter(Boolean).join('\n\n');
     apiMessages.push({ role: 'system', content: systemContent });
 
     // Add history + new user message (with multimodal content for vision)
@@ -382,8 +398,11 @@ export default function ChatPage({
       // Check if message has image attachments — send as multimodal content
       const imageAttachments = m.attachments?.filter((a) => a.type === 'image') ?? [];
       if (m.role === 'user' && imageAttachments.length > 0) {
+        const outgoingText = m.id === userMsg.id && enhancementEnabled
+          ? buildEnhancedPrompt(m.content)
+          : m.content;
         const contentParts: Array<{ type: string;[k: string]: unknown }> = [
-          { type: 'text', text: m.content },
+          { type: 'text', text: outgoingText },
         ];
         for (const att of imageAttachments) {
           contentParts.push({
@@ -393,9 +412,17 @@ export default function ChatPage({
         }
         apiMessages.push({ role: m.role, content: contentParts });
       } else {
-        apiMessages.push({ role: m.role, content: m.content });
+        const outgoingText = m.role === 'user' && m.id === userMsg.id && enhancementEnabled
+          ? buildEnhancedPrompt(m.content)
+          : m.content;
+        apiMessages.push({ role: m.role, content: outgoingText });
       }
     });
+
+    const effectiveTemperature = computeEffectiveTemperature(
+      settings.temperature,
+      settings.creativity,
+    );
 
     // Placeholder assistant message
     const assistantId = uuid();
@@ -419,6 +446,7 @@ export default function ChatPage({
         {
           model: selectedModel.name,
           messages: apiMessages,
+          temperature: effectiveTemperature,
         },
         (chunk) => {
           accum += chunk;

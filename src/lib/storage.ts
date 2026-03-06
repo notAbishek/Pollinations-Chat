@@ -92,6 +92,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoReadBalance: true,
   selectedModel: 'openai',
   systemPrompt: 'You are a helpful assistant.',
+  temperature: 0.7,
+  creativity: 0.5,
+  enablePromptEnhancement: false,
   theme: 'dark',
 };
 

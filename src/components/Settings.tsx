@@ -123,6 +123,62 @@ export default function Settings({
           />
         </div>
 
+        {/* Generation controls */}
+        <div className="space-y-4 mb-6">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label htmlFor="temperature-slider" className="text-sm font-medium text-foreground">
+                Temperature
+              </label>
+              <span className="text-xs text-muted-foreground">{settings.temperature.toFixed(2)}</span>
+            </div>
+            <input
+              id="temperature-slider"
+              type="range"
+              min={0}
+              max={2}
+              step={0.1}
+              value={settings.temperature}
+              onChange={(e) => onUpdateSettings({ temperature: Number(e.target.value) })}
+              className="w-full accent-primary"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Controls how deterministic vs. varied the response is.
+            </p>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label htmlFor="creativity-slider" className="text-sm font-medium text-foreground">
+                Creativity
+              </label>
+              <span className="text-xs text-muted-foreground">{settings.creativity.toFixed(2)}</span>
+            </div>
+            <input
+              id="creativity-slider"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.creativity}
+              onChange={(e) => onUpdateSettings({ creativity: Number(e.target.value) })}
+              className="w-full accent-primary"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Scales how strongly temperature is applied.
+            </p>
+          </div>
+        </div>
+
+        <div className="mb-6">
+          <Toggle
+            label="Enhance text prompts"
+            description="Only for text prompts. Rewrites your prompt for clarity and adds guidance for richer output."
+            checked={settings.enablePromptEnhancement}
+            onChange={(v) => onUpdateSettings({ enablePromptEnhancement: v })}
+          />
+        </div>
+
         {/* Export / Import */}
         <div className="mb-6">
           <h3 className="text-sm font-medium text-foreground mb-3">Data Management</h3>
