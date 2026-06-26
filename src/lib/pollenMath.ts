@@ -7,76 +7,71 @@
  * All comparisons use a tiny epsilon for float rounding.
  */
 
+import type { ModelPricing } from '../types';
+
 /** Minimum pollen cost for a single prompt on the cheapest model */
 export const MIN_POLLEN_PER_PROMPT = 0.00004; // 1 / 25000
 
-/** Float comparison epsilon */
-const EPSILON = 1e-10;
+/** Float comparison epsilon — half the smallest billable unit */
+const EPSILON = MIN_POLLEN_PER_PROMPT / 2;
+
+/** Coerce a pricing field (the API sometimes returns decimal strings) to a finite number. */
+function num(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 /**
- * Compute pollen cost for a generation request.
+ * Compute estimated pollen cost for a generation request.
  *
- * If model pricing metadata is available, uses that.
- * Otherwise falls back to MIN_POLLEN_PER_PROMPT.
+ * Each applicable modality is summed INDEPENDENTLY (a model priced for both text
+ * and image output is charged for both). Input image tokens are included so
+ * vision requests are not undercharged. Falls back to MIN_POLLEN_PER_PROMPT.
  *
- * @param pricing - pricing info from model metadata
- * @param inputTokens - estimated input tokens
- * @param outputTokens - estimated output tokens (or 1 for images)
+ * @param pricing          - pricing info from model metadata
+ * @param inputTokens      - estimated text input tokens
+ * @param outputTokens     - estimated text output tokens (or 1 for images)
+ * @param imageInputTokens - estimated image input tokens (vision)
+ * @param audioInputTokens - estimated audio input tokens (speech-in models)
  */
 export function computePollenCost(
-  pricing: {
-    promptTextTokens?: number;
-    promptAudioTokens?: number;
-    completionTextTokens?: number;
-    completionImageTokens?: number;
-    completionVideoSeconds?: number;
-    completionVideoTokens?: number;
-    completionAudioSeconds?: number;
-    completionAudioTokens?: number;
-  } | null | undefined,
+  pricing: Partial<ModelPricing> | null | undefined,
   inputTokens = 100,
   outputTokens = 500,
+  imageInputTokens = 0,
+  audioInputTokens = 0,
 ): number {
   if (!pricing) return MIN_POLLEN_PER_PROMPT;
 
   let cost = 0;
 
-  // Input cost
-  if (pricing.promptTextTokens) {
-    cost += pricing.promptTextTokens * inputTokens;
-  }
-  if (pricing.promptAudioTokens) {
-    cost += pricing.promptAudioTokens * inputTokens;
-  }
+  // ── Input — each modality billed against its OWN quantity ──
+  cost += num(pricing.promptTextTokens) * inputTokens;
+  if (imageInputTokens > 0) cost += num(pricing.promptImageTokens) * imageInputTokens;
+  if (audioInputTokens > 0) cost += num(pricing.promptAudioTokens) * audioInputTokens;
 
-  // Output cost — use whichever applies
-  if (pricing.completionTextTokens) {
-    cost += pricing.completionTextTokens * outputTokens;
-  } else if (pricing.completionImageTokens) {
-    cost += pricing.completionImageTokens; // per image
-  } else if (pricing.completionVideoSeconds) {
-    cost += pricing.completionVideoSeconds * 5; // estimate 5 seconds
-  } else if (pricing.completionVideoTokens) {
-    cost += pricing.completionVideoTokens * outputTokens;
-  } else if (pricing.completionAudioTokens) {
-    cost += pricing.completionAudioTokens * outputTokens;
-  } else if (pricing.completionAudioSeconds) {
-    cost += pricing.completionAudioSeconds * 10; // estimate 10 seconds
-  }
+  // ── Output — sum every applicable modality (independent, not else-if) ──
+  cost += num(pricing.completionTextTokens) * outputTokens;
+  if (num(pricing.completionImageTokens) > 0) cost += num(pricing.completionImageTokens); // per image
+  if (num(pricing.completionVideoTokens) > 0) cost += num(pricing.completionVideoTokens) * outputTokens;
+  if (num(pricing.completionAudioTokens) > 0) cost += num(pricing.completionAudioTokens) * outputTokens;
+  if (num(pricing.completionVideoSeconds) > 0) cost += num(pricing.completionVideoSeconds) * 5; // ~5s estimate
+  if (num(pricing.completionAudioSeconds) > 0) cost += num(pricing.completionAudioSeconds) * 10; // ~10s estimate
 
-  // Ensure at least minimum cost
   return Math.max(cost, MIN_POLLEN_PER_PROMPT);
 }
 
 /**
  * Check if the user has sufficient pollen balance for a request.
- * Uses epsilon to handle float rounding.
+ * Guards against NaN/Infinity and uses a tiny epsilon for float rounding.
  */
 export function hasSufficientPollen(
   balance: number,
   requiredPollen: number,
 ): boolean {
-  return balance + EPSILON >= requiredPollen;
+  if (!Number.isFinite(balance)) return false;
+  const need = Number.isFinite(requiredPollen) ? requiredPollen : MIN_POLLEN_PER_PROMPT;
+  return balance + EPSILON >= need;
 }
 
 /**

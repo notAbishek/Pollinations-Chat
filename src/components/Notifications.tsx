@@ -1,7 +1,8 @@
 /**
- * Notifications — bottom-right rounded-corner toast messages.
+ * Notifications — bottom-right toast messages with spring enter/exit.
  */
 
+import { motion, AnimatePresence } from 'motion/react';
 import type { Notification } from '../types';
 
 interface NotificationsProps {
@@ -10,9 +11,9 @@ interface NotificationsProps {
 }
 
 const TYPE_STYLES: Record<string, string> = {
-  success: 'bg-card border-green-800 text-green-400',
-  error: 'bg-card border-red-800 text-red-400',
-  warning: 'bg-card border-yellow-800 text-yellow-400',
+  success: 'bg-card border-success/40 text-success',
+  error: 'bg-card border-destructive/40 text-destructive',
+  warning: 'bg-card border-warning/40 text-warning',
   info: 'bg-card border-border text-foreground',
 };
 
@@ -31,27 +32,31 @@ function NotifIcon({ type }: { type: string }) {
 }
 
 export default function Notifications({ notifications, onDismiss }: NotificationsProps) {
-  if (notifications.length === 0) return null;
-
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
-      {notifications.map((n) => (
-        <div
-          key={n.id}
-          className={`flex items-start gap-2 px-4 py-3 rounded-lg border shadow-lg animate-slide-up ${
-            TYPE_STYLES[n.type] ?? TYPE_STYLES.info
-          }`}
-        >
-          <NotifIcon type={n.type} />
-          <p className="text-sm flex-1">{n.message}</p>
-          <button
-            onClick={() => onDismiss(n.id)}
-            className="text-current opacity-60 hover:opacity-100 flex-shrink-0"
+    <div className="fixed bottom-4 right-4 z-[70] flex flex-col gap-2 max-w-sm pointer-events-none">
+      <AnimatePresence initial={false}>
+        {notifications.map((n) => (
+          <motion.div
+            key={n.id}
+            layout
+            initial={{ opacity: 0, x: 40, scale: 0.95 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 40, scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 32 }}
+            className={`pointer-events-auto flex items-start gap-2 px-4 py-3 rounded-xl border shadow-lg ${TYPE_STYLES[n.type] ?? TYPE_STYLES.info}`}
           >
-            ×
-          </button>
-        </div>
-      ))}
+            <NotifIcon type={n.type} />
+            <p className="text-sm flex-1 text-foreground">{n.message}</p>
+            <button
+              onClick={() => onDismiss(n.id)}
+              className="text-muted-foreground hover:text-foreground flex-shrink-0 transition-colors"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }

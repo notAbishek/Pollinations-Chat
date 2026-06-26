@@ -1,8 +1,15 @@
 /**
- * IndexedDB-based local storage for chat sessions using the `idb` library.
+ * IndexedDB-based local storage for chat sessions, settings, and the API key,
+ * using the `idb` library.
  *
- * ⚠️ DATABASE IS NOT AVAILABLE — chats are stored locally only.
- * If you clear your browser, data will be lost. Use Export to backup.
+ * ⚠️ Data is stored locally in your browser only. Clearing the browser loses it.
+ *
+ * Threat model for the API key: it lives in origin-isolated IndexedDB. Unlike a
+ * non-HttpOnly cookie it is NOT auto-attached to requests (no CSRF surface) and
+ * is only read by this app's code. A client-only app cannot fully hide a key
+ * from a successful XSS; the markdown renderer is configured to not execute raw
+ * HTML to keep that surface small. For full secrecy, proxy generation through a
+ * backend so the key never reaches the browser.
  */
 
 import { openDB, type IDBPDatabase } from 'idb';
@@ -12,6 +19,8 @@ const DB_NAME = 'pollinations-chat';
 const DB_VERSION = 1;
 const SESSIONS_STORE = 'sessions';
 const SETTINGS_STORE = 'settings';
+const API_KEY_ID = 'api-key';
+const LEGACY_API_KEY_COOKIE = 'pollinations_api_key';
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -27,6 +36,13 @@ function getDB(): Promise<IDBPDatabase> {
           db.createObjectStore(SETTINGS_STORE, { keyPath: 'key' });
         }
       },
+      blocked() {
+        console.warn('[storage] DB open blocked by another tab');
+      },
+    }).catch((err) => {
+      // Don't cache a rejected promise forever — allow a later retry.
+      dbPromise = null;
+      throw err;
     });
   }
   return dbPromise;
@@ -34,19 +50,16 @@ function getDB(): Promise<IDBPDatabase> {
 
 // ─── Session CRUD ────────────────────────────────────────────────
 
+/** Persist a session. Throws on failure so callers can surface the error. */
 export async function saveSession(session: ChatSession): Promise<void> {
-  try {
-    const db = await getDB();
-    await db.put(SESSIONS_STORE, session);
-  } catch {
-    console.warn('[storage] Failed to save session');
-  }
+  const db = await getDB();
+  await db.put(SESSIONS_STORE, session);
 }
 
 export async function getSession(id: string): Promise<ChatSession | undefined> {
   try {
     const db = await getDB();
-    return db.get(SESSIONS_STORE, id);
+    return await db.get(SESSIONS_STORE, id);
   } catch {
     console.warn('[storage] Failed to get session');
     return undefined;
@@ -67,21 +80,13 @@ export async function getAllSessions(): Promise<ChatSession[]> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  try {
-    const db = await getDB();
-    await db.delete(SESSIONS_STORE, id);
-  } catch {
-    console.warn('[storage] Failed to delete session');
-  }
+  const db = await getDB();
+  await db.delete(SESSIONS_STORE, id);
 }
 
 export async function clearAllSessions(): Promise<void> {
-  try {
-    const db = await getDB();
-    await db.clear(SESSIONS_STORE);
-  } catch {
-    console.warn('[storage] Failed to clear sessions');
-  }
+  const db = await getDB();
+  await db.clear(SESSIONS_STORE);
 }
 
 // ─── Settings ────────────────────────────────────────────────────
@@ -95,7 +100,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   temperature: 0.7,
   creativity: 0.5,
   enablePromptEnhancement: false,
-  theme: 'dark',
+  theme: 'system',
 };
 
 export async function getSettings(): Promise<AppSettings> {
@@ -113,71 +118,77 @@ export async function getSettings(): Promise<AppSettings> {
 export async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   try {
     const db = await getDB();
-    const current = await getSettings();
-    await db.put(SETTINGS_STORE, {
+    // Atomic read-modify-write in a single transaction (no last-writer-wins race).
+    const tx = db.transaction(SETTINGS_STORE, 'readwrite');
+    const store = tx.objectStore(SETTINGS_STORE);
+    const row = await store.get('app-settings');
+    const current: Partial<AppSettings> = row?.value ?? {};
+    await store.put({
       key: 'app-settings',
-      value: { ...current, ...settings },
+      value: { ...DEFAULT_SETTINGS, ...current, ...settings },
     });
+    await tx.done;
   } catch {
     console.warn('[storage] Failed to save settings');
   }
 }
 
-// ─── API Key (stored in cookies) ─────────────────────────────────
-
-const API_KEY_COOKIE = 'pollinations_api_key';
+// ─── API Key (origin-isolated IndexedDB) ─────────────────────────
 
 export async function saveApiKey(apiKey: string): Promise<void> {
-  try {
-    const maxAge = 365 * 24 * 60 * 60; // 1 year
-    const secure = window.location.protocol === 'https:' ? ';Secure' : '';
-    document.cookie = `${API_KEY_COOKIE}=${encodeURIComponent(apiKey)};path=/;max-age=${maxAge};SameSite=Strict${secure}`;
-  } catch {
-    console.warn('[storage] Failed to save API key to cookie');
-  }
+  const db = await getDB();
+  await db.put(SETTINGS_STORE, { key: API_KEY_ID, value: apiKey });
 }
 
 export async function getApiKey(): Promise<string | null> {
   try {
-    const cookies = document.cookie.split(';');
-    for (const cookie of cookies) {
-      const [name, ...valueParts] = cookie.trim().split('=');
-      if (name === API_KEY_COOKIE) {
-        const value = decodeURIComponent(valueParts.join('='));
-        return value || null;
-      }
-    }
-    // Migration: check IndexedDB for existing key and migrate to cookie
-    try {
-      const db = await getDB();
-      const row = await db.get(SETTINGS_STORE, 'api-key');
-      if (row?.value) {
-        await saveApiKey(row.value); // Migrate to cookie
-        await db.delete(SETTINGS_STORE, 'api-key'); // Remove from IDB
-        return row.value;
-      }
-    } catch {
-      // IDB migration failed, not critical
+    const db = await getDB();
+    const row = await db.get(SETTINGS_STORE, API_KEY_ID);
+    if (row?.value) return row.value as string;
+
+    // One-time migration: an older build stored the key in a cookie.
+    const cookieKey = readLegacyCookieKey();
+    if (cookieKey) {
+      await saveApiKey(cookieKey);
+      clearLegacyCookieKey();
+      return cookieKey;
     }
     return null;
   } catch {
-    console.warn('[storage] Failed to get API key from cookie');
+    console.warn('[storage] Failed to get API key');
     return null;
   }
 }
 
 export async function clearApiKey(): Promise<void> {
   try {
-    document.cookie = `${API_KEY_COOKIE}=;path=/;max-age=0;SameSite=Strict`;
-    // Also clean up any old IDB entry
-    try {
-      const db = await getDB();
-      await db.delete(SETTINGS_STORE, 'api-key');
-    } catch {
-      // Not critical
+    const db = await getDB();
+    await db.delete(SETTINGS_STORE, API_KEY_ID);
+  } catch {
+    console.warn('[storage] Failed to clear API key');
+  }
+  clearLegacyCookieKey();
+}
+
+function readLegacyCookieKey(): string | null {
+  try {
+    for (const cookie of document.cookie.split(';')) {
+      const [name, ...valueParts] = cookie.trim().split('=');
+      if (name === LEGACY_API_KEY_COOKIE) {
+        return decodeURIComponent(valueParts.join('=')) || null;
+      }
     }
   } catch {
-    console.warn('[storage] Failed to clear API key cookie');
+    /* ignore */
+  }
+  return null;
+}
+
+function clearLegacyCookieKey(): void {
+  try {
+    document.cookie = `${LEGACY_API_KEY_COOKIE}=;path=/;max-age=0;SameSite=Strict`;
+  } catch {
+    /* ignore */
   }
 }
 

@@ -2,7 +2,7 @@
  * Export / Import chat sessions as JSON or Markdown.
  */
 
-import type { ChatSession, ChatExport, ChatMessage } from '../types';
+import type { ChatSession, ChatExport, ChatMessage, MessageAttachment } from '../types';
 
 // ─── Export ──────────────────────────────────────────────────────
 
@@ -23,10 +23,11 @@ export function exportMarkdown(sessions: ChatSession[]): string {
   for (const session of sessions) {
     lines.push(`## ${session.title}`);
     lines.push(`**Model:** ${session.model} | **Created:** ${new Date(session.createdAt).toLocaleString()}`);
-    lines.push(`**Pollen spent:** ${session.totalPollenSpent.toFixed(5)}\n`);
+    // Defensive: sessions read straight from IndexedDB may predate these fields.
+    lines.push(`**Pollen spent:** ${(session.totalPollenSpent ?? 0).toFixed(5)}\n`);
     lines.push('---\n');
 
-    for (const msg of session.messages) {
+    for (const msg of session.messages ?? []) {
       const roleLabel =
         msg.role === 'user' ? '**You**' :
         msg.role === 'assistant' ? '**Assistant**' :
@@ -36,9 +37,9 @@ export function exportMarkdown(sessions: ChatSession[]): string {
       lines.push(msg.content);
       lines.push('');
 
-      if (msg.attachments.length > 0) {
+      if ((msg.attachments ?? []).length > 0) {
         lines.push('**Attachments:**');
-        for (const att of msg.attachments) {
+        for (const att of msg.attachments ?? []) {
           if (att.type === 'image') {
             lines.push(`![${att.name}](${att.dataUrl})`);
           } else {
@@ -60,8 +61,11 @@ export function downloadFile(content: string, filename: string, mimeType: string
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  // Append to DOM (required by Firefox) and defer revoke past the click tick.
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 // ─── Import ──────────────────────────────────────────────────────
@@ -74,25 +78,19 @@ export function importJSON(raw: string): ChatSession[] {
     throw new Error('Invalid JSON format');
   }
 
-  // Check if it's a ChatExport
+  // ChatExport envelope
   if (
     typeof parsed === 'object' &&
     parsed !== null &&
     'version' in parsed &&
     'sessions' in parsed
   ) {
-    const data = parsed as ChatExport;
-    if (!Array.isArray(data.sessions)) {
-      throw new Error('Invalid export: sessions must be an array');
-    }
-    validateSessions(data.sessions);
-    return data.sessions;
+    return normalizeSessions((parsed as ChatExport).sessions);
   }
 
-  // Maybe it's a raw array of sessions
+  // Or a raw array of sessions
   if (Array.isArray(parsed)) {
-    validateSessions(parsed as ChatSession[]);
-    return parsed as ChatSession[];
+    return normalizeSessions(parsed);
   }
 
   throw new Error('Unrecognized import format: expected { version, sessions } or array of sessions');
@@ -159,10 +157,81 @@ export function importMarkdown(md: string): ChatSession[] {
   return sessions;
 }
 
-function validateSessions(sessions: ChatSession[]): void {
-  for (const s of sessions) {
-    if (!s.id || !s.messages || !Array.isArray(s.messages)) {
-      throw new Error(`Invalid session: missing id or messages`);
-    }
+/* ── Normalization / validation ──────────────────────────────────
+ * Untrusted import data is coerced into well-formed sessions/messages with
+ * safe defaults so it can never poison IndexedDB or crash render paths that
+ * assume `attachments` is an array or `totalPollenSpent` is numeric.
+ */
+
+const rec = (v: unknown): Record<string, unknown> =>
+  v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+
+const asNumber = (v: unknown, fallback: number): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const ATTACH_TYPES = ['image', 'video', 'audio', 'file'];
+const MODES = ['text', 'image', 'video', 'audio'];
+
+function normalizeAttachment(raw: unknown): MessageAttachment | null {
+  const a = rec(raw);
+  if (typeof a.dataUrl !== 'string') return null;
+  return {
+    id: typeof a.id === 'string' ? a.id : crypto.randomUUID(),
+    type: (ATTACH_TYPES.includes(a.type as string) ? a.type : 'file') as MessageAttachment['type'],
+    name: typeof a.name === 'string' ? a.name : 'attachment',
+    mimeType: typeof a.mimeType === 'string' ? a.mimeType : '',
+    dataUrl: a.dataUrl,
+    sizeBytes: asNumber(a.sizeBytes, 0),
+  };
+}
+
+function normalizeMessage(raw: unknown, now: number): ChatMessage | null {
+  const m = rec(raw);
+  const role = m.role === 'assistant' || m.role === 'system' ? m.role : 'user';
+  const content = typeof m.content === 'string' ? m.content : '';
+  const attachments = Array.isArray(m.attachments)
+    ? (m.attachments.map(normalizeAttachment).filter(Boolean) as MessageAttachment[])
+    : [];
+  if (!content && attachments.length === 0) return null;
+  return {
+    id: typeof m.id === 'string' ? m.id : crypto.randomUUID(),
+    role,
+    content,
+    mode: (MODES.includes(m.mode as string) ? m.mode : 'text') as ChatMessage['mode'],
+    attachments,
+    timestamp: asNumber(m.timestamp, now),
+    model: typeof m.model === 'string' ? m.model : undefined,
+    tokensUsed: m.tokensUsed != null ? asNumber(m.tokensUsed, 0) : undefined,
+    pollenSpent: m.pollenSpent != null ? asNumber(m.pollenSpent, 0) : undefined,
+    isError: !!m.isError,
+  };
+}
+
+function normalizeSession(raw: unknown, now: number): ChatSession | null {
+  const s = rec(raw);
+  if (!Array.isArray(s.messages)) return null;
+  const messages = s.messages.map((m) => normalizeMessage(m, now)).filter(Boolean) as ChatMessage[];
+  return {
+    id: typeof s.id === 'string' ? s.id : crypto.randomUUID(),
+    title: typeof s.title === 'string' && s.title.trim() ? s.title : 'Imported Chat',
+    messages,
+    model: typeof s.model === 'string' ? s.model : 'openai',
+    createdAt: asNumber(s.createdAt, now),
+    updatedAt: asNumber(s.updatedAt, now),
+    totalPollenSpent: asNumber(s.totalPollenSpent, 0),
+  };
+}
+
+export function normalizeSessions(raw: unknown): ChatSession[] {
+  if (!Array.isArray(raw)) throw new Error('Invalid export: expected an array of sessions');
+  const now = Date.now();
+  const out = raw.map((s) => normalizeSession(s, now)).filter(Boolean) as ChatSession[];
+  // An empty export is valid (returns []); a non-empty file with no salvageable
+  // session is treated as a bad import.
+  if (raw.length > 0 && out.length === 0) {
+    throw new Error('No valid chat sessions found');
   }
+  return out;
 }

@@ -20,6 +20,8 @@ export interface ModelCapabilities {
   webSearch: boolean;
   deepThink: boolean;
   codeExecution: boolean;
+  /** Speech-to-text: takes an audio file as input and returns a text transcript */
+  transcription?: boolean;
 }
 
 /** Pricing info from Pollinations model metadata */
@@ -77,6 +79,10 @@ export interface ChatMessage {
   pollenSpent?: number;
   isPartial?: boolean;   // true while streaming
   isError?: boolean;
+  /** Reasoning / "thinking" trace emitted by reasoning models, shown in a collapsible panel */
+  reasoning?: string;
+  /** Wall-clock time spent in the reasoning phase, in ms */
+  reasoningMs?: number;
 }
 
 /** A chat session (stored locally) */
@@ -154,6 +160,9 @@ export interface Notification {
   duration?: number;
 }
 
+/** Theme preference — 'system' follows the OS color scheme */
+export type ThemePreference = 'dark' | 'light' | 'system';
+
 /** App settings stored locally */
 export interface AppSettings {
   showUsageIcon: boolean;
@@ -164,7 +173,7 @@ export interface AppSettings {
   temperature: number;
   creativity: number;
   enablePromptEnhancement: boolean;
-  theme: 'dark';
+  theme: ThemePreference;
 }
 
 /** OpenAI-compatible streaming chunk */
@@ -178,6 +187,9 @@ export interface StreamDelta {
     delta: {
       role?: string;
       content?: string;
+      /** Reasoning trace streamed by reasoning models (provider-dependent key) */
+      reasoning?: string;
+      reasoning_content?: string;
     };
     finish_reason: string | null;
   }>;

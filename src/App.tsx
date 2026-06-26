@@ -109,7 +109,7 @@ export default function App() {
     <>
       {authState.valid && authState.apiKey ? (
         <ChatPage
-          apiKey={authState.apiKey}
+          auth={authState}
           models={models}
           notifySuccess={notifySuccess}
           notifyError={notifyError}

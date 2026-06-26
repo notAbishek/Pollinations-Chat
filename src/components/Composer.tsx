@@ -3,6 +3,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type KeyboardEvent } from 'react';
+import { motion } from 'motion/react';
 import { v4 as uuid } from 'uuid';
 import type { GenerationMode, MessageAttachment, PollinationsModel } from '../types';
 import { getTokenMeterColor } from '../lib/tokenizer';
@@ -162,8 +163,12 @@ export default function Composer({
     }
   }, [model]);
 
-  const acceptTypes =
-    effectiveMode === 'image'
+  // Speech-to-text models take an audio file as input.
+  const isTranscription = !!model?.capabilities.transcription;
+
+  const acceptTypes = isTranscription
+    ? 'audio/*'
+    : effectiveMode === 'image'
       ? 'image/*'
       : effectiveMode === 'video'
         ? 'video/*'
@@ -172,11 +177,13 @@ export default function Composer({
           : 'image/*,video/*,*/*';
 
   // Determine if attachment button should be enabled
-  // Only enable for models that support vision (image input)
+  // Enable for vision (image input) and speech-to-text (audio input) models.
   const attachmentEnabled = model ? (
     model.capabilities.vision ||
     model.inputModalities.includes('image') ||
-    model.type === 'image'
+    model.type === 'image' ||
+    isTranscription ||
+    model.inputModalities.includes('audio')
   ) : false;
 
   const meterColor = getTokenMeterColor(
@@ -218,7 +225,7 @@ export default function Composer({
 
       {/* Floating input pill */}
       <div className="flex items-center gap-1.5 sm:gap-2 ">
-        <div className="flex-1 min-w-0 flex items-end gap-0 bg-secondary border border-border rounded-full px-1 sm:px-1.5 py-1">
+        <div className="flex-1 min-w-0 flex items-end gap-0 bg-secondary border border-border rounded-full px-1 sm:px-1.5 py-1 transition-all focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/30">
           {/* Attachment (+) button — inside left, disabled for non-vision models */}
           <button
             onClick={() => attachmentEnabled && fileInputRef.current?.click()}
@@ -248,7 +255,7 @@ export default function Composer({
             value={text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
-            placeholder="Ask anything"
+            placeholder={isTranscription ? 'Attach an audio file to transcribe…' : 'Ask anything'}
             disabled={disabled}
             rows={1}
             className="flex-1 min-w-0 resize-none bg-transparent px-1.5 sm:px-2 py-2 text-sm text-foreground placeholder-muted-foreground focus:outline-none max-h-[120px]"
@@ -291,7 +298,8 @@ export default function Composer({
 
           {/* Send / Cancel button — inside right */}
           {isStreaming ? (
-            <button
+            <motion.button
+              whileTap={{ scale: 0.88 }}
               onClick={onCancel}
               className="flex-shrink-0 w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded-full bg-destructive/20 text-destructive hover:bg-destructive/30 transition-colors"
               title="Stop generation"
@@ -299,18 +307,19 @@ export default function Composer({
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                 <rect x="6" y="6" width="12" height="12" rx="2" />
               </svg>
-            </button>
+            </motion.button>
           ) : (
-            <button
+            <motion.button
+              whileTap={{ scale: 0.88 }}
               onClick={handleSend}
               disabled={disabled || (!text.trim() && attachments.length === 0)}
-              className="flex-shrink-0 w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex-shrink-0 w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded-full bg-brand-gradient text-white shadow-[0_2px_10px_hsl(var(--primary)/0.4)] disabled:shadow-none disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
               title="Send message"
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none">
                 <path d="M7 11L12 6L17 11M12 6V18" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-            </button>
+            </motion.button>
           )}
         </div>
 
@@ -476,7 +485,7 @@ function InlineModelPicker({
                     <ModelTypeIcon type={m.type} />
                     <span className="flex-1 truncate">{m.name}</span>
                     {m.paidOnly && (
-                      <span className="text-[9px] bg-accent text-accent-foreground px-1 py-0.5 rounded font-medium flex-shrink-0">PRO</span>
+                      <span className="text-[9px] bg-brand-gradient text-white px-1 py-0.5 rounded font-medium flex-shrink-0">PRO</span>
                     )}
                     {selected && m.id === selected.id && (
                       <svg className="w-3.5 h-3.5 text-foreground flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

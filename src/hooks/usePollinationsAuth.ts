@@ -11,26 +11,38 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import type { AuthState } from '../types';
-import { validateApiKey, getProfile } from '../lib/pollinations';
+import { validateApiKey, getProfile, PollinationsError } from '../lib/pollinations';
 import { saveApiKey, getApiKey } from '../lib/storage';
+import { isPaidTier } from '../lib/tier';
 
 const AUTHORIZE_URL = 'https://enter.pollinations.ai/authorize';
 
 /**
- * Module-level capture of the API key from the URL hash.
+ * Module-level capture of the API key (or error) from the URL hash.
  * This runs once at import time — before any React lifecycle —
- * so the key survives React.StrictMode's unmount/remount cycle.
+ * so it survives React.StrictMode's unmount/remount cycle.
  */
 let _capturedHashKey: string | null = null;
+let _capturedHashError: string | null = null;
 
-(function captureHashKeyOnce() {
+(function captureHashOnce() {
   const hash = window.location.hash;
   if (!hash || hash.length <= 1) return;
   const params = new URLSearchParams(hash.slice(1));
   const key = params.get('api_key');
+  const err = params.get('error');
   if (key) {
     _capturedHashKey = key;
-    // Clear the key from the URL immediately for security
+  } else if (err) {
+    // e.g. #error=access_denied — surface it instead of silently dropping the user
+    const desc = params.get('error_description');
+    _capturedHashError =
+      err === 'access_denied'
+        ? 'Sign-in was cancelled or denied. Please try again.'
+        : desc || `Sign-in failed (${err}). Please try again.`;
+  }
+  if (key || err) {
+    // Clear the fragment immediately (the key especially must not linger in the URL)
     const url = new URL(window.location.href);
     url.hash = '';
     window.history.replaceState(null, '', url.pathname + url.search);
@@ -77,10 +89,11 @@ async function resolveAuthState(apiKey: string): Promise<AuthState> {
     const profile = await getProfile(apiKey);
     tier = profile.tier;
     nextResetAt = profile.nextResetAt ?? null;
-    isPro = ['seed', 'flower', 'nectar', 'router'].includes(tier);
+    isPro = isPaidTier(tier); // only flower/nectar are paid
   } catch {
-    // If profile fetch fails, determine from key type
-    isPro = keyInfo.type === 'secret';
+    // Profile unavailable (e.g. key lacks the permission) — we cannot confirm a
+    // paid tier, so default to free rather than guessing from key type.
+    isPro = false;
   }
 
   return {
@@ -110,6 +123,15 @@ export function usePollinationsAuth(): UsePollinationsAuthReturn {
     initRan.current = true;
 
     async function init() {
+      // 0. An OAuth error fragment (e.g. #error=access_denied) takes priority.
+      const hashError = _capturedHashError;
+      _capturedHashError = null;
+      if (hashError) {
+        setError(hashError);
+        setLoading(false);
+        return;
+      }
+
       try {
         // 1. Check if we captured a key from the URL hash (OAuth redirect)
         const hashKey = _capturedHashKey;
@@ -138,10 +160,16 @@ export function usePollinationsAuth(): UsePollinationsAuthReturn {
         // 3. No key found — user needs to sign in
         setLoading(false);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '';
-        if (msg.includes('internet') || msg.includes('connect')) {
-          setError('Unable to connect. Please check your internet connection.');
-        } else if (msg.includes('expired') || msg.includes('invalid')) {
+        // Branch on structured error data, not human-readable copy.
+        if (err instanceof PollinationsError) {
+          if (err.code === 'network_error' || err.status === 0) {
+            setError('Unable to connect. Please check your internet connection.');
+          } else if (err.code === 'invalid_key' || err.status === 401) {
+            setError('Your session has expired. Please sign in again.');
+          } else {
+            setError(err.message || 'Authentication failed. Please try signing in again.');
+          }
+        } else if (err instanceof Error && /expired|invalid/i.test(err.message)) {
           setError('Your session has expired. Please sign in again.');
         } else {
           setError('Authentication failed. Please try signing in again.');

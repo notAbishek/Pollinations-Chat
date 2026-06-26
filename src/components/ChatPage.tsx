@@ -12,6 +12,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { v4 as uuid } from 'uuid';
 import type {
   PollinationsModel,
@@ -20,6 +21,7 @@ import type {
   AccountBalance,
   GenerationMode,
   MessageAttachment,
+  AuthState,
 } from '../types';
 import {
   streamGeneration,
@@ -28,6 +30,8 @@ import {
   generateImage,
   generateVideo,
   generateAudioDirect,
+  transcribeAudio,
+  validateApiKey,
   PollinationsError,
 } from '../lib/pollinations';
 import { estimateTokens, getTokenMeterColor } from '../lib/tokenizer';
@@ -43,11 +47,12 @@ import { useTokenMeter } from '../hooks/useTokenMeter';
 import MessageList from './MessageList';
 import Composer from './Composer';
 import ModelInfoPanel from './ModelInfoPanel';
-import UsageIcon from './UsageIcon';
+import AccountStatus from './AccountStatus';
+import ThemeToggle from './ThemeToggle';
 import Settings from './Settings';
 
 interface ChatPageProps {
-  apiKey: string;
+  auth: AuthState;
   models: PollinationsModel[];
   notifySuccess: (msg: string) => string;
   notifyError: (msg: string) => string;
@@ -55,17 +60,19 @@ interface ChatPageProps {
 }
 
 export default function ChatPage({
-  apiKey,
+  auth,
   models,
   notifySuccess,
   notifyError,
   onLogout,
 }: ChatPageProps) {
+  const apiKey = auth.apiKey;
   /* ── session management ─────────────────────────────── */
   const {
     sessions,
     activeSession,
     activeSessionId,
+    getSessionById,
     createSession,
     switchSession,
     addMessage,
@@ -76,6 +83,8 @@ export default function ChatPage({
     deleteMessagesFrom,
     importSessions,
     clearAll,
+    flushPersist,
+    setOnPersistError,
   } = useLocalSession();
 
   /* ── state ──────────────────────────────────────────── */
@@ -84,6 +93,7 @@ export default function ChatPage({
   );
   const [isStreaming, setIsStreaming] = useState(false);
   const [balance, setBalance] = useState<AccountBalance | null>(null);
+  const [pollenBudget, setPollenBudget] = useState<number | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     showUsageIcon: true,
     autoFetchUsage: true,
@@ -113,6 +123,11 @@ export default function ChatPage({
     getSettings().then((s) => setSettings(s));
   }, []);
 
+  /* ── surface local-save failures as toasts ──────────── */
+  useEffect(() => {
+    setOnPersistError(notifyError);
+  }, [setOnPersistError, notifyError]);
+
   /* ── fetch balance on mount & periodically ──────────── */
   const refreshBalance = useCallback(async () => {
     try {
@@ -128,6 +143,21 @@ export default function ChatPage({
     const iv = setInterval(refreshBalance, 120_000);
     return () => clearInterval(iv);
   }, [refreshBalance]);
+
+  /* ── fetch per-key pollen budget (distinct from wallet balance) ── */
+  useEffect(() => {
+    let cancelled = false;
+    validateApiKey(apiKey)
+      .then((info) => {
+        if (!cancelled) setPollenBudget(info.pollenBudget ?? null);
+      })
+      .catch(() => {
+        /* non-critical */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiKey]);
 
   /* ── model change ───────────────────────────────────── */
   const handleModelChange = (modelId: string) => {
@@ -369,6 +399,57 @@ export default function ChatPage({
       return;
     }
 
+    // ─── transcription (speech-to-text) ────────────────
+    // STT models (whisper, scribe, universal-2/-3-pro) take audio in and return
+    // text — route them to /v1/audio/transcriptions, never the TTS endpoint.
+    if (selectedModel.capabilities.transcription) {
+      setIsStreaming(true);
+      const transMsgId = uuid();
+      addMessage(sessionId, {
+        id: transMsgId,
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        mode: 'text',
+        model: selectedModel.name,
+        attachments: [],
+        isPartial: true,
+      });
+
+      const audioAtt = attachments.find((a) => a.type === 'audio');
+      if (!audioAtt) {
+        updateMessage(sessionId, transMsgId, {
+          content: '**Transcription needs an audio file**\n\nAttach an audio file (the 📎 button) and send again to transcribe it with this speech-to-text model.',
+          isPartial: false,
+          isError: true,
+        });
+        setIsStreaming(false);
+        await flushPersist();
+        return;
+      }
+
+      try {
+        const blob = await (await fetch(audioAtt.dataUrl)).blob();
+        const transcript = await transcribeAudio(apiKey, blob, selectedModel.name, audioAtt.name);
+        updateMessage(sessionId, transMsgId, {
+          content: transcript || '*(No speech detected in the audio.)*',
+          isPartial: false,
+        });
+      } catch (err) {
+        handleError(err);
+        updateMessage(sessionId, transMsgId, {
+          content: extractFriendlyError(err, selectedModel.name, 'transcription'),
+          isPartial: false,
+          isError: true,
+        });
+      } finally {
+        setIsStreaming(false);
+        await flushPersist();
+        postGenerationTasks();
+      }
+      return;
+    }
+
     // ─── text / streaming ──────────────────────────────
     setIsStreaming(true);
     const controller = new AbortController();
@@ -392,8 +473,11 @@ export default function ChatPage({
       : [markdownInstruction, enhancementInstruction].filter(Boolean).join('\n\n');
     apiMessages.push({ role: 'system', content: systemContent });
 
-    // Add history + new user message (with multimodal content for vision)
-    const allMessages = [...(activeSession?.messages ?? []), userMsg];
+    // Build history from the LIVE session (addMessage above already appended
+    // userMsg) rather than the render-time `activeSession`. This avoids
+    // resending deleted turns / duplicating the user message on regenerate/edit.
+    const liveSession = getSessionById(sessionId);
+    const allMessages = liveSession?.messages ?? [userMsg];
     allMessages.forEach((m) => {
       // Check if message has image attachments — send as multimodal content
       const imageAttachments = m.attachments?.filter((a) => a.type === 'image') ?? [];
@@ -439,6 +523,32 @@ export default function ChatPage({
     addMessage(sessionId, assistantMsg);
 
     let accum = '';
+    let accumReasoning = '';
+    const reasoningStart = Date.now();
+    let rafId: number | null = null;
+    let renderPending = false;
+
+    // Coalesce many token deltas into ~1 render/frame to avoid jank; the hook
+    // additionally debounces the IndexedDB writes underneath.
+    const scheduleRender = () => {
+      if (renderPending) return;
+      renderPending = true;
+      rafId = requestAnimationFrame(() => {
+        renderPending = false;
+        rafId = null;
+        updateMessage(sessionId, assistantId, {
+          content: accum,
+          reasoning: accumReasoning || undefined,
+          tokensUsed: estimateTokens(accum),
+          isPartial: true,
+        });
+      });
+    };
+    const cancelScheduled = () => {
+      if (rafId != null) cancelAnimationFrame(rafId);
+      rafId = null;
+      renderPending = false;
+    };
 
     try {
       await streamGeneration(
@@ -447,28 +557,38 @@ export default function ChatPage({
           model: selectedModel.name,
           messages: apiMessages,
           temperature: effectiveTemperature,
+          ...(selectedModel.capabilities.deepThink
+            ? { reasoning_effort: 'medium' as const }
+            : {}),
         },
-        (chunk) => {
-          accum += chunk;
-          updateMessage(sessionId, assistantId, {
-            content: accum,
-            tokensUsed: estimateTokens(accum),
-            isPartial: true,
-          });
+        {
+          onContent: (chunk) => {
+            accum += chunk;
+            scheduleRender();
+          },
+          onReasoning: (chunk) => {
+            accumReasoning += chunk;
+            scheduleRender();
+          },
+          onDone: (usage) => {
+            cancelScheduled();
+            updateMessage(sessionId, assistantId, {
+              content: accum,
+              reasoning: accumReasoning || undefined,
+              reasoningMs: accumReasoning ? Date.now() - reasoningStart : undefined,
+              tokensUsed: usage?.completion_tokens ?? estimateTokens(accum),
+              isPartial: false,
+            });
+          },
+          signal: controller.signal,
         },
-        (usage, _userTier) => {
-          updateMessage(sessionId, assistantId, {
-            content: accum,
-            tokensUsed: usage?.completion_tokens ?? estimateTokens(accum),
-            isPartial: false,
-          });
-        },
-        controller.signal,
       );
     } catch (err) {
+      cancelScheduled();
       if ((err as Error).name === 'AbortError') {
         updateMessage(sessionId, assistantId, {
-          content: accum + '\n\n*[Generation cancelled]*',
+          content: accum + (accum ? '\n\n' : '') + '*[Generation cancelled]*',
+          reasoning: accumReasoning || undefined,
           isPartial: false,
         });
       } else {
@@ -480,11 +600,19 @@ export default function ChatPage({
             isPartial: false,
             isError: true,
           });
+        } else {
+          // Keep the partial answer we already streamed.
+          updateMessage(sessionId, assistantId, {
+            content: accum,
+            reasoning: accumReasoning || undefined,
+            isPartial: false,
+          });
         }
       }
     } finally {
       setIsStreaming(false);
       abortRef.current = null;
+      await flushPersist();
       postGenerationTasks();
     }
   }, [
@@ -492,7 +620,7 @@ export default function ChatPage({
     settings,
     balance,
     activeSessionId,
-    activeSession,
+    getSessionById,
     createSession,
     addMessage,
     updateMessage,
@@ -500,6 +628,7 @@ export default function ChatPage({
     apiKey,
     handleError,
     postGenerationTasks,
+    flushPersist,
   ]);
 
   const handleCancel = () => {
@@ -546,32 +675,30 @@ export default function ChatPage({
 
   /* ── message actions (hover toolbar) ────────────────── */
   const handleRegenerate = useCallback(async (assistantMessageId: string) => {
-    if (!activeSessionId || !activeSession || isStreaming) return;
+    const session = getSessionById(activeSessionId);
+    if (!activeSessionId || !session || isStreaming) return;
     // Find the assistant message and the user message before it
-    const msgIndex = activeSession.messages.findIndex((m) => m.id === assistantMessageId);
+    const msgIndex = session.messages.findIndex((m) => m.id === assistantMessageId);
     if (msgIndex <= 0) return;
-    const userMsg = activeSession.messages[msgIndex - 1];
+    const userMsg = session.messages[msgIndex - 1];
     if (userMsg.role !== 'user') return;
 
-    // Delete the assistant message (and everything after it)
+    // Delete the assistant message (and everything after it) — then resend.
     await deleteMessagesFrom(activeSessionId, assistantMessageId);
-
-    // Re-send the user message
     handleSend(userMsg.content, userMsg.mode, userMsg.attachments);
-  }, [activeSessionId, activeSession, isStreaming, deleteMessagesFrom, handleSend]);
+  }, [activeSessionId, getSessionById, isStreaming, deleteMessagesFrom, handleSend]);
 
   const handleEditAndRegenerate = useCallback(async (userMessageId: string, newContent: string) => {
-    if (!activeSessionId || !activeSession || isStreaming) return;
-    const msgIndex = activeSession.messages.findIndex((m) => m.id === userMessageId);
+    const session = getSessionById(activeSessionId);
+    if (!activeSessionId || !session || isStreaming) return;
+    const msgIndex = session.messages.findIndex((m) => m.id === userMessageId);
     if (msgIndex === -1) return;
+    const originalMsg = session.messages[msgIndex];
 
-    // Delete the user message and everything after it
+    // Delete the user message and everything after it — then resend the edit.
     await deleteMessagesFrom(activeSessionId, userMessageId);
-
-    // Re-send with new content
-    const originalMsg = activeSession.messages[msgIndex];
     handleSend(newContent, originalMsg.mode, originalMsg.attachments);
-  }, [activeSessionId, activeSession, isStreaming, deleteMessagesFrom, handleSend]);
+  }, [activeSessionId, getSessionById, isStreaming, deleteMessagesFrom, handleSend]);
 
   const handleCopyMessage = useCallback((content: string) => {
     navigator.clipboard.writeText(content);
@@ -755,9 +882,12 @@ export default function ChatPage({
             </svg>
           </button>
 
-          <span className="text-lg sm:text-xl font-bold text-foreground whitespace-nowrap">
-            <span className="sm:hidden">P.AI</span>
-            <span className="hidden sm:inline">Pollinations.AI</span>
+          <span className="flex items-center gap-1.5 whitespace-nowrap">
+            <span className="w-2.5 h-2.5 rounded-full bg-brand-gradient flex-shrink-0 shadow-[0_0_10px_hsl(var(--primary)/0.6)]" />
+            <span className="text-lg sm:text-xl font-bold text-brand-gradient">
+              <span className="sm:hidden">P.AI</span>
+              <span className="hidden sm:inline">Pollinations.AI</span>
+            </span>
           </span>
 
           {selectedModel && (
@@ -773,9 +903,13 @@ export default function ChatPage({
           <div className="flex-1" />
 
           {settings.showUsageIcon && (
-            <UsageIcon
+            <AccountStatus
               visible={settings.showUsageIcon}
               balance={balance}
+              tier={auth.tier}
+              isPro={auth.isPro}
+              nextResetAt={auth.nextResetAt}
+              pollenBudget={pollenBudget}
               onRefresh={refreshBalance}
             />
           )}
@@ -793,6 +927,8 @@ export default function ChatPage({
             </div>
           )}
 
+          <ThemeToggle />
+
           <button
             onClick={() => setSettingsOpen(true)}
             className="p-1.5 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
@@ -809,12 +945,22 @@ export default function ChatPage({
         {messages.length === 0 ? (
           /* ── Empty state: composer centered ── */
           <div className="flex-1 flex flex-col items-center justify-center min-h-0 px-4">
-            <div className="text-center text-muted-foreground mb-4 sm:mb-8">
-              <svg className="w-12 h-12 sm:w-16 sm:h-16 mx-auto mb-3 sm:mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              <p className="text-base sm:text-lg font-medium">What can I help with?</p>
-            </div>
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+              className="text-center mb-5 sm:mb-8"
+            >
+              <div className="mx-auto mb-4 w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-brand-gradient flex items-center justify-center shadow-[0_8px_30px_hsl(var(--primary)/0.35)]">
+                <svg className="w-7 h-7 sm:w-8 sm:h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+              </div>
+              <p className="text-xl sm:text-2xl font-bold text-brand-gradient">What can I help with?</p>
+              <p className="text-sm text-muted-foreground mt-1.5">
+                Chat, or generate images, video &amp; audio — powered by Pollinations.
+              </p>
+            </motion.div>
             <div className="w-full max-w-2xl">
               <Composer
                 model={selectedModel}
@@ -870,19 +1016,21 @@ export default function ChatPage({
       </div>
 
       {/* Settings modal */}
-      {settingsOpen && (
-        <Settings
-          settings={settings}
-          onUpdateSettings={handleUpdateSettings}
-          sessions={sessions}
-          onImport={importSessions}
-          onClearAll={clearAll}
-          onClose={() => setSettingsOpen(false)}
-          onLogout={onLogout}
-          notifySuccess={notifySuccess}
-          notifyError={notifyError}
-        />
-      )}
+      <AnimatePresence>
+        {settingsOpen && (
+          <Settings
+            settings={settings}
+            onUpdateSettings={handleUpdateSettings}
+            sessions={sessions}
+            onImport={importSessions}
+            onClearAll={clearAll}
+            onClose={() => setSettingsOpen(false)}
+            onLogout={onLogout}
+            notifySuccess={notifySuccess}
+            notifyError={notifyError}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

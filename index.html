@@ -1,9 +1,23 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pollinations Chat</title>
+    <!-- Apply theme before first paint to avoid a flash of the wrong theme -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('pollinations-theme') || 'system';
+          var sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var dark = pref === 'dark' || (pref === 'system' && sysDark);
+          document.documentElement.classList.toggle('dark', dark);
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
     <meta name="description" content="Chat with 25+ AI models — OpenAI, Claude, Gemini, Mistral and more. Powered by Pollinations." />
     <meta name="theme-color" content="#0a0a0a" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

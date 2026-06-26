@@ -2,58 +2,93 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── ShadCN dark theme variables ─────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   Pollen Bloom — design tokens
+   :root = Light (default)   ·   .dark = Dark (hero)
+   All tokens are HSL triplets so Tailwind's hsl(var(--x) / <alpha>)
+   opacity modifiers keep working (bg-primary/90, border-border/40, …).
+   ═══════════════════════════════════════════════════════════════════ */
 @layer base {
   :root {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 5.5%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 5.5%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --ring: 0 0% 83.1%;
+    --background: 38 58% 96%;        /* #FBF7F0 warm paper */
+    --foreground: 22 26% 8%;         /* #1B1410 */
+    --card: 0 0% 100%;
+    --card-foreground: 22 26% 8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 22 26% 8%;
+    --primary: 21 90% 48%;           /* #E8590C Pollen Orange */
+    --primary-foreground: 27 91% 9%; /* #2A1402 */
+    --secondary: 37 45% 92%;         /* #F4EDE2 */
+    --secondary-foreground: 22 26% 8%;
+    --muted: 39 40% 90%;             /* #F0E9DC */
+    --muted-foreground: 36 18% 36%;  /* #6B5E4B */
+    --accent: 37 40% 90%;            /* #EFE7DA subtle hover surface */
+    --accent-foreground: 22 26% 8%;
+    --destructive: 0 72% 51%;        /* #DC2626 */
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 76% 36%;          /* #16A34A */
+    --success-foreground: 0 0% 100%;
+    --warning: 26 90% 37%;           /* #B45309 */
+    --warning-foreground: 0 0% 100%;
+    --accent2: 293 69% 49%;          /* #C026D3 Bloom Magenta */
+    --accent2-foreground: 0 0% 100%;
+    --accent3: 262 83% 58%;          /* #7C3AED Iris Violet */
+    --accent3-foreground: 0 0% 100%;
+    --border: 39 37% 85%;            /* #E7DDCB */
+    --input: 39 37% 85%;
+    --ring: 21 90% 48%;
     --radius: 0.75rem;
+    --brand-gradient: linear-gradient(135deg, #FFB020 0%, #E8590C 38%, #C026D3 100%);
+    --shadow-color: 24 30% 50%;
+  }
+
+  .dark {
+    --background: 264 33% 6%;        /* #0E0A14 deep aubergine-black */
+    --foreground: 273 52% 96%;       /* #F5EFFA */
+    --card: 266 29% 9%;              /* #17111F */
+    --card-foreground: 273 52% 96%;
+    --popover: 263 28% 11%;          /* #1B1525 */
+    --popover-foreground: 273 52% 96%;
+    --primary: 25 100% 55%;          /* #FF7A1A luminous Pollen Orange */
+    --primary-foreground: 31 86% 6%; /* #1B0F02 */
+    --secondary: 272 26% 13%;        /* #211829 */
+    --secondary-foreground: 273 52% 96%;
+    --muted: 263 31% 11%;            /* #1B1426 */
+    --muted-foreground: 269 21% 65%; /* #A593B8 */
+    --accent: 270 24% 16%;           /* #2A2034 */
+    --accent-foreground: 273 52% 96%;
+    --destructive: 351 95% 71%;      /* #FB7185 */
+    --destructive-foreground: 31 86% 6%;
+    --success: 158 64% 52%;          /* #34D399 */
+    --success-foreground: 159 72% 8%;
+    --warning: 43 96% 56%;           /* #FBBF24 */
+    --warning-foreground: 37 100% 8%;
+    --accent2: 291 96% 62%;          /* #E040FB electric Bloom Magenta */
+    --accent2-foreground: 0 0% 100%;
+    --accent3: 271 91% 65%;          /* #A855F7 Iris Violet */
+    --accent3-foreground: 0 0% 100%;
+    --border: 261 28% 20%;           /* #2E2440 */
+    --input: 261 28% 20%;
+    --ring: 25 100% 55%;
+    --brand-gradient: linear-gradient(135deg, #FFB020 0%, #FF7A1A 36%, #E040FB 78%, #A855F7 100%);
+    --shadow-color: 264 50% 2%;
   }
 
   * {
     @apply border-border;
     scrollbar-width: thin;
-    scrollbar-color: hsl(0 0% 20%) transparent;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
   }
 
-  *::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-
-  *::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
+  *::-webkit-scrollbar { width: 7px; height: 7px; }
+  *::-webkit-scrollbar-track { background: transparent; }
   *::-webkit-scrollbar-thumb {
-    background: hsl(0 0% 20%);
-    border-radius: 3px;
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 4px;
   }
+  *::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.5); }
 
-  *::-webkit-scrollbar-thumb:hover {
-    background: hsl(0 0% 30%);
-  }
-
-  html,
-  body,
-  #root {
+  html, body, #root {
     @apply overflow-hidden;
     height: 100vh;
     height: 100dvh;
@@ -61,181 +96,137 @@
 
   body {
     @apply bg-background text-foreground;
+    /* Smooth the theme crossfade */
+    transition: background-color 0.4s ease, color 0.4s ease;
   }
 
-  ::selection {
-    background: rgba(148, 163, 184, 0.3);
-  }
+  ::selection { background: hsl(var(--primary) / 0.28); }
 }
 
-/* ── animations ───────────────────────────────────────── */
-@keyframes slide-up {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
-}
-
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-.animate-slide-up {
-  animation: slide-up 0.25s ease-out;
-}
-
-.animate-pulse-dot {
-  animation: pulse-dot 1.2s ease-in-out infinite;
-}
-
-.animate-fade-in {
-  animation: fade-in 0.2s ease-out;
-}
-
-/* ── prose overrides for chat messages ────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   Brand utilities
+   ═══════════════════════════════════════════════════════════════════ */
 @layer components {
-  .prose-chat {
-    @apply text-foreground leading-relaxed text-sm max-w-none break-words;
+  .bg-brand-gradient { background-image: var(--brand-gradient); }
+  .text-brand-gradient {
+    background-image: var(--brand-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
   }
-
-  .prose-chat p {
-    @apply mb-2 last:mb-0;
+  .border-brand-gradient {
+    border-color: transparent;
+    background-image:
+      linear-gradient(hsl(var(--card)), hsl(var(--card))),
+      var(--brand-gradient);
+    background-origin: border-box;
+    background-clip: padding-box, border-box;
   }
+}
 
-  .prose-chat strong {
-    @apply text-foreground font-semibold;
-  }
+/* ═══════════════════════════════════════════════════════════════════
+   Animations  (all flourishes respect prefers-reduced-motion below)
+   ═══════════════════════════════════════════════════════════════════ */
+@keyframes slide-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pulse-dot { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+@keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes thinking-glow { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes stream-fade-in { from { opacity: 0; filter: blur(2px); transform: translateY(3px); } to { opacity: 1; filter: blur(0); transform: translateY(0); } }
 
-  .prose-chat em {
-    @apply italic;
-  }
+.animate-slide-up { animation: slide-up 0.28s cubic-bezier(0.22, 1, 0.36, 1); }
+.animate-fade-in { animation: fade-in 0.2s ease-out; }
+.animate-pulse-dot { animation: pulse-dot 1.2s ease-in-out infinite; }
+.animate-msg-in { animation: msg-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
-  .prose-chat h1,
-  .prose-chat h2,
-  .prose-chat h3,
-  .prose-chat h4 {
-    @apply text-foreground font-semibold mt-4 mb-2;
-  }
+/* Streaming caret in the brand accent hue */
+.streaming-caret {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: hsl(var(--primary));
+  animation: thinking-glow 0.9s ease-in-out infinite;
+}
 
+/* "Thinking…" shimmer bar */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 0%,
+    hsl(var(--muted-foreground) / 0.25) 50%,
+    hsl(var(--muted)) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+/* Only the most-recently-appended block animates while streaming */
+.streaming-fade-in > :last-child {
+  animation: stream-fade-in 0.35s ease-out both;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Markdown (chat assistant messages)
+   ═══════════════════════════════════════════════════════════════════ */
+@layer components {
+  .prose-chat { @apply text-foreground leading-relaxed text-[0.9375rem] max-w-none break-words; }
+  .prose-chat > *:first-child { @apply mt-0; }
+  .prose-chat p { @apply mb-3 last:mb-0; }
+  .prose-chat strong { @apply text-foreground font-semibold; }
+  .prose-chat em { @apply italic; }
+  .prose-chat h1, .prose-chat h2, .prose-chat h3, .prose-chat h4 { @apply text-foreground font-semibold mt-5 mb-2 leading-tight; }
   .prose-chat h1 { @apply text-xl; }
   .prose-chat h2 { @apply text-lg; }
   .prose-chat h3 { @apply text-base; }
   .prose-chat h4 { @apply text-sm; }
-
-  .prose-chat ul,
-  .prose-chat ol {
-    @apply pl-5 mb-3 space-y-1;
-  }
-
+  .prose-chat ul, .prose-chat ol { @apply pl-5 mb-3 space-y-1.5; }
   .prose-chat ul { @apply list-disc; }
   .prose-chat ol { @apply list-decimal; }
-
-  .prose-chat li {
-    @apply text-card-foreground;
-  }
-
-  .prose-chat li p {
-    @apply mb-1;
-  }
-
-  .prose-chat code {
-    @apply bg-muted text-foreground px-1.5 py-0.5 rounded text-sm font-mono;
-  }
-
-  .prose-chat pre {
-    @apply bg-muted rounded-lg p-4 my-3 overflow-x-auto;
-  }
-
-  .prose-chat pre code {
-    @apply bg-transparent p-0 text-muted-foreground;
-  }
-
-  .prose-chat blockquote {
-    @apply border-l-2 border-border pl-4 my-3 text-muted-foreground italic;
-  }
-
-  .prose-chat a {
-    @apply text-primary underline hover:text-primary/80 transition-colors;
-  }
-
-  .prose-chat table {
-    @apply w-full border-collapse my-3;
-  }
-
-  .prose-chat th {
-    @apply bg-muted px-3 py-2 text-left text-sm font-medium text-muted-foreground border border-border;
-  }
-
-  .prose-chat td {
-    @apply px-3 py-2 text-sm border border-border;
-  }
-
-  .prose-chat hr {
-    @apply border-border my-4;
-  }
-
-  .prose-chat img {
-    @apply rounded-lg max-w-full max-h-80 my-2;
-  }
+  .prose-chat li { @apply text-foreground/90; }
+  .prose-chat li::marker { color: hsl(var(--primary)); }
+  .prose-chat li p { @apply mb-1; }
+  .prose-chat code { @apply bg-muted text-foreground px-1.5 py-0.5 rounded text-[0.85em] font-mono; }
+  .prose-chat pre { @apply bg-muted rounded-lg p-4 my-3 overflow-x-auto; }
+  .prose-chat pre code { @apply bg-transparent p-0 text-foreground; }
+  .prose-chat blockquote { @apply border-l-2 pl-4 my-3 text-muted-foreground italic; border-color: hsl(var(--primary) / 0.5); }
+  .prose-chat a { @apply font-medium underline underline-offset-2 transition-colors; color: hsl(var(--primary)); }
+  .prose-chat a:hover { color: hsl(var(--primary) / 0.8); }
+  /* tables scroll inside their own container, never the page */
+  .prose-chat .table-scroll { @apply w-full overflow-x-auto my-3 rounded-lg border border-border; }
+  .prose-chat table { @apply w-full border-collapse text-sm; }
+  .prose-chat th { @apply bg-muted px-3 py-2 text-left font-medium text-muted-foreground border-b border-border whitespace-nowrap; }
+  .prose-chat td { @apply px-3 py-2 border-b border-border/60 tabular-nums; }
+  .prose-chat tr:last-child td { @apply border-b-0; }
+  .prose-chat hr { @apply border-border my-4; }
+  .prose-chat img { @apply rounded-lg max-w-full my-2; }
+  /* KaTeX inherits color; let long equations scroll */
+  .prose-chat .katex-display { @apply overflow-x-auto overflow-y-hidden py-1; }
 }
 
-/* ── streaming cursor ─────────────────────────────────── */
-.streaming-cursor::after {
-  content: '▎';
-  animation: pulse-dot 0.8s ease-in-out infinite;
-  color: hsl(0 0% 63.9%);
-  font-weight: bold;
-}
-
-/* ── touch device support ─────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   Touch / safe-area
+   ═══════════════════════════════════════════════════════════════════ */
 @media (hover: none) and (pointer: coarse) {
-  /* Disable tap highlight for cleaner touch UX */
-  button, a, [role="button"] {
-    -webkit-tap-highlight-color: transparent;
-  }
+  button, a, [role="button"] { -webkit-tap-highlight-color: transparent; }
 }
-
-/* Touch action utility */
-.touch-action-manipulation {
-  touch-action: manipulation;
-}
-
-/* Safe area padding for devices with notches/home bars */
+.touch-action-manipulation { touch-action: manipulation; }
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
-  .pb-safe {
-    padding-bottom: env(safe-area-inset-bottom);
-  }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
 }
 
-/* ── streaming text fade-in (Gemini-style) ────────────── */
-@keyframes stream-fade-in {
-  from {
-    opacity: 0;
-    filter: blur(2px);
-    transform: translateY(4px);
+/* ═══════════════════════════════════════════════════════════════════
+   Reduced motion — disable all non-essential animation/transition
+   ═══════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
-  to {
-    opacity: 1;
-    filter: blur(0);
-    transform: translateY(0);
-  }
-}
-
-.streaming-fade-in .prose-chat > *,
-.streaming-fade-in .prose-chat {
-  animation: stream-fade-in 0.4s ease-out both;
-}
-
-.streaming-fade-in .prose-chat > *:last-child {
-  animation: stream-fade-in 0.35s ease-out both;
+  .streaming-caret { animation: none; opacity: 0.8; }
 }

@@ -27,10 +27,15 @@ function headers(apiKey: string): Record<string, string> {
   };
 }
 
+/** Wrap fetch so offline/DNS/CORS failures become a typed PollinationsError. */
 async function safeFetch(url: string, init?: RequestInit) {
   try {
     return await fetch(url, init);
   } catch (err) {
+    // Deliberate aborts (caller cancel or timeout) must propagate untouched.
+    if ((err as Error)?.name === 'AbortError' || (err as Error)?.name === 'TimeoutError') {
+      throw err;
+    }
     // Network errors (offline, DNS, CORS)
     if (err instanceof TypeError) {
       throw new PollinationsError(
@@ -43,6 +48,86 @@ async function safeFetch(url: string, init?: RequestInit) {
   }
 }
 
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Best-effort timeout signal; undefined on browsers without AbortSignal.timeout. */
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  try {
+    return AbortSignal.timeout(ms);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Retry an idempotent request with exponential backoff. Retries on network
+ * errors and retryable HTTP statuses, honoring the Retry-After header.
+ * Deliberate aborts are never retried.
+ */
+async function withRetry(
+  fn: () => Promise<Response>,
+  {
+    attempts = 3,
+    baseDelay = 500,
+    retryNetworkErrors = true,
+  }: { attempts?: number; baseDelay?: number; retryNetworkErrors?: boolean } = {},
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fn();
+      if (RETRYABLE_STATUS.has(res.status) && i < attempts - 1) {
+        const retryAfter = Number(res.headers.get('retry-after'));
+        const delay =
+          Number.isFinite(retryAfter) && retryAfter > 0
+            ? retryAfter * 1000
+            : baseDelay * 2 ** i;
+        await sleep(delay);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError' || (err as Error)?.name === 'TimeoutError') {
+        throw err;
+      }
+      // Non-idempotent calls (the streaming POST) must NOT be re-sent on a network
+      // error — the request may already have triggered a billable generation.
+      if (!retryNetworkErrors) throw err;
+      lastErr = err;
+      if (i < attempts - 1) {
+        await sleep(baseDelay * 2 ** i);
+        continue;
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/** GET JSON with timeout + retry, throwing a typed PollinationsError on failure. */
+async function getJSON<T>(
+  path: string,
+  apiKey: string | undefined,
+  opts: { timeoutMs?: number; errorMessage: string; errorCode: string },
+): Promise<T> {
+  const { timeoutMs = 15000, errorMessage, errorCode } = opts;
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) h.Authorization = `Bearer ${apiKey}`;
+
+  const res = await withRetry(() =>
+    safeFetch(`${BASE}${path}`, { headers: h, signal: timeoutSignal(timeoutMs) }),
+  );
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new PollinationsError('Invalid or expired API key. Please sign in again.', 401, 'invalid_key');
+    }
+    const body = await res.json().catch(() => null);
+    throw new PollinationsError(parseApiError(body, errorMessage), res.status, errorCode);
+  }
+  return res.json() as Promise<T>;
+}
+
 // ─── API Key Validation ──────────────────────────────────────────
 
 /**
@@ -50,42 +135,49 @@ async function safeFetch(url: string, init?: RequestInit) {
  * Uses GET /account/key which returns key info + validity.
  */
 export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo> {
-  const res = await safeFetch(`${BASE}/account/key`, {
-    headers: headers(apiKey),
+  const info = await getJSON<ApiKeyInfo>('/account/key', apiKey, {
+    errorMessage: 'Unable to validate your API key. Please try again later.',
+    errorCode: 'validation_failed',
   });
-  if (!res.ok) {
-    if (res.status === 401) throw new PollinationsError('Invalid or expired API key. Please sign in again.', 401, 'invalid_key');
-    throw new PollinationsError('Unable to validate your API key. Please try again later.', res.status, 'validation_failed');
+  // Runtime guard — schema drift or an edge-proxy HTML 200 must not silently
+  // produce `valid: undefined` and lock out a valid user.
+  if (!info || typeof info.valid !== 'boolean') {
+    throw new PollinationsError('Unexpected response while validating your API key. Please try again.', 0, 'invalid_response');
   }
-  return res.json();
+  return info;
 }
 
 // ─── Account ─────────────────────────────────────────────────────
 
 export async function getBalance(apiKey: string): Promise<AccountBalance> {
-  const res = await safeFetch(`${BASE}/account/balance`, {
-    headers: headers(apiKey),
+  const b = await getJSON<AccountBalance>('/account/balance', apiKey, {
+    errorMessage: 'Unable to fetch your balance. Please try again later.',
+    errorCode: 'balance_failed',
   });
-  if (!res.ok) throw new PollinationsError('Unable to fetch your balance. Please try again later.', res.status, 'balance_failed');
-  return res.json();
+  if (!b || typeof b.balance !== 'number' || !Number.isFinite(b.balance)) {
+    throw new PollinationsError('Received an invalid balance from the server.', 0, 'invalid_response');
+  }
+  return b;
 }
 
 export async function getProfile(apiKey: string): Promise<AccountProfile> {
-  const res = await safeFetch(`${BASE}/account/profile`, {
-    headers: headers(apiKey),
+  const p = await getJSON<AccountProfile>('/account/profile', apiKey, {
+    errorMessage: 'Unable to fetch your profile. Please try again later.',
+    errorCode: 'profile_failed',
   });
-  if (!res.ok) throw new PollinationsError('Unable to fetch your profile. Please try again later.', res.status, 'profile_failed');
-  return res.json();
+  if (!p || typeof p.tier !== 'string') {
+    throw new PollinationsError('Received an invalid profile from the server.', 0, 'invalid_response');
+  }
+  return p;
 }
 
 export async function getUsage(
   apiKey: string,
 ): Promise<{ usage: UsageRecord[]; count: number }> {
-  const res = await safeFetch(`${BASE}/account/usage`, {
-    headers: headers(apiKey),
+  return getJSON('/account/usage', apiKey, {
+    errorMessage: 'Unable to fetch usage data. Please try again later.',
+    errorCode: 'usage_failed',
   });
-  if (!res.ok) throw new PollinationsError('Unable to fetch usage data. Please try again later.', res.status, 'usage_failed');
-  return res.json();
 }
 
 // ─── Smoke Tests ─────────────────────────────────────────────────
@@ -210,13 +302,40 @@ function defaultTokenLimits(name: string): {
   return { maxInput: 64000, maxOutput: 4096 };
 }
 
-export async function getTextModels(apiKey?: string): Promise<PollinationsModel[]> {
+/**
+ * A model is "paid" when any of its pricing fields is a positive number.
+ * (The docs express paid-vs-free via pricing values, not a `paid_only` flag,
+ * so we derive it from pricing and only fall back to the flag if present.)
+ */
+function isPaidPricing(p?: ModelPricing): boolean {
+  if (!p) return false;
+  const vals = [
+    p.promptTextTokens, p.promptImageTokens, p.promptCachedTokens, p.promptAudioTokens,
+    p.completionTextTokens, p.completionImageTokens, p.completionAudioTokens,
+    p.completionVideoTokens, p.completionVideoSeconds, p.completionAudioSeconds,
+  ];
+  return vals.some((v) => Number(v) > 0);
+}
+
+/** Fetch a model list (array) with retry + timeout, throwing typed errors. */
+async function fetchRawModels<T>(path: string, apiKey?: string): Promise<T[]> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) h.Authorization = `Bearer ${apiKey}`;
+  const res = await withRetry(() =>
+    safeFetch(`${BASE}${path}`, { headers: h, signal: timeoutSignal(15000) }),
+  );
+  if (!res.ok) {
+    throw new PollinationsError(`Failed to load models (${res.status}).`, res.status, 'models_failed');
+  }
+  const data = await res.json().catch(() => null);
+  if (!Array.isArray(data)) {
+    throw new PollinationsError('The model list had an unexpected shape.', 0, 'invalid_response');
+  }
+  return data as T[];
+}
 
-  const res = await safeFetch(`${BASE}/text/models`, { headers: h });
-  if (!res.ok) throw new Error(`Failed to fetch text models: ${res.status}`);
-  const raw: RawTextModel[] = await res.json();
+export async function getTextModels(apiKey?: string): Promise<PollinationsModel[]> {
+  const raw = await fetchRawModels<RawTextModel>('/text/models', apiKey);
 
   return raw.map((m) => {
     const limits = defaultTokenLimits(m.name);
@@ -234,7 +353,7 @@ export async function getTextModels(apiKey?: string): Promise<PollinationsModel[
       type: isAudio ? ('audio' as const) : ('text' as const),
       inputModalities: m.input_modalities ?? ['text'],
       outputModalities: m.output_modalities ?? ['text'],
-      paidOnly: m.paid_only ?? false,
+      paidOnly: m.paid_only ?? isPaidPricing(m.pricing),
       pricing: m.pricing ?? { currency: 'pollen' },
       capabilities: inferCapabilities(m),
       maxInputTokens: maxInput,
@@ -246,12 +365,7 @@ export async function getTextModels(apiKey?: string): Promise<PollinationsModel[
 }
 
 export async function getImageModels(apiKey?: string): Promise<PollinationsModel[]> {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey) h.Authorization = `Bearer ${apiKey}`;
-
-  const res = await safeFetch(`${BASE}/image/models`, { headers: h });
-  if (!res.ok) throw new Error(`Failed to fetch image models: ${res.status}`);
-  const raw: RawImageModel[] = await res.json();
+  const raw = await fetchRawModels<RawImageModel>('/image/models', apiKey);
 
   return raw.map((m) => {
     const outputs = m.output_modalities ?? ['image'];
@@ -263,7 +377,7 @@ export async function getImageModels(apiKey?: string): Promise<PollinationsModel
       type: isVideo ? ('video' as const) : ('image' as const),
       inputModalities: m.input_modalities ?? ['text'],
       outputModalities: outputs,
-      paidOnly: m.paid_only ?? false,
+      paidOnly: m.paid_only ?? isPaidPricing(m.pricing),
       pricing: m.pricing ?? { currency: 'pollen' },
       capabilities: {
         vision: (m.input_modalities ?? []).includes('image'),
@@ -282,33 +396,35 @@ export async function getImageModels(apiKey?: string): Promise<PollinationsModel
 }
 
 export async function getAudioModels(apiKey?: string): Promise<PollinationsModel[]> {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey) h.Authorization = `Bearer ${apiKey}`;
-
-  const res = await safeFetch(`${BASE}/audio/models`, { headers: h });
-  if (!res.ok) throw new Error(`Failed to fetch audio models: ${res.status}`);
-  const raw: RawAudioModel[] = await res.json();
+  const raw = await fetchRawModels<RawAudioModel>('/audio/models', apiKey);
 
   return raw.map((m) => {
+    const inputs = m.input_modalities ?? ['text'];
+    const outputs = m.output_modalities ?? ['audio'];
+    // Speech-to-text (e.g. whisper, scribe, universal-2/-3-pro): audio in, text out.
+    // These must NOT go to the text-to-audio endpoint — treat them as
+    // text-producing transcription models instead.
+    const isSTT = inputs.includes('audio') && outputs.includes('text') && !outputs.includes('audio');
     return {
       id: m.name,
       name: m.name,
       description: m.description ?? '',
-      type: 'audio' as const,
-      inputModalities: m.input_modalities ?? ['text'],
-      outputModalities: m.output_modalities ?? ['audio'],
-      paidOnly: m.paid_only ?? false,
+      type: isSTT ? ('text' as const) : ('audio' as const),
+      inputModalities: inputs,
+      outputModalities: outputs,
+      paidOnly: m.paid_only ?? isPaidPricing(m.pricing),
       pricing: m.pricing ?? { currency: 'pollen' },
       capabilities: {
         vision: false,
-        audio: true,
+        audio: !isSTT, // TTS models produce audio; STT models consume it
         streaming: false,
         webSearch: false,
         deepThink: false,
         codeExecution: false,
+        transcription: isSTT,
       },
       maxInputTokens: 4096,
-      maxOutputTokens: 1,
+      maxOutputTokens: isSTT ? 4096 : 1,
       contextLength: 4097,
       aliases: m.aliases ?? [],
     };
@@ -319,14 +435,26 @@ export async function getAudioModels(apiKey?: string): Promise<PollinationsModel
  * Fetch all models (text + image/video + audio) and return combined list.
  */
 export async function getAllModels(apiKey?: string): Promise<PollinationsModel[]> {
-  const [text, image, audio] = await Promise.all([
+  // allSettled: one failed endpoint must not blank the entire model picker.
+  const results = await Promise.allSettled([
     getTextModels(apiKey),
     getImageModels(apiKey),
-    getAudioModels(apiKey).catch(() => [] as PollinationsModel[]),
+    getAudioModels(apiKey),
   ]);
-  // Filter out audio-type models from text list (they'll come from audio endpoint)
+  const [text, image, audio] = results.map((r) =>
+    r.status === 'fulfilled' ? r.value : ([] as PollinationsModel[]),
+  );
+  // Filter out audio-type models from text list (they come from the audio endpoint)
   const filtered = text.filter((m) => m.type !== 'audio');
-  return [...filtered, ...image, ...audio];
+  const all = [...filtered, ...image, ...audio];
+  if (all.length === 0) {
+    throw new PollinationsError(
+      'Could not load any models. Please check your connection and try again.',
+      0,
+      'models_failed',
+    );
+  }
+  return all;
 }
 
 // ─── Streaming Generation ────────────────────────────────────────
@@ -340,52 +468,80 @@ export interface ChatCompletionPayload {
   stream?: boolean;
   max_tokens?: number;
   temperature?: number;
+  /** Reasoning models only — how much thinking budget to spend */
+  reasoning_effort?: 'minimal' | 'low' | 'medium' | 'high';
   stream_options?: { include_usage: boolean };
 }
 
+export interface StreamHandlers {
+  /** Called with each answer text delta */
+  onContent: (text: string) => void;
+  /** Called with each reasoning/"thinking" delta (reasoning models only) */
+  onReasoning?: (text: string) => void;
+  /** Called once when the stream ends, with final usage + tier */
+  onDone: (usage?: StreamDelta['usage'], userTier?: string) => void;
+  /** Optional cancellation signal */
+  signal?: AbortSignal;
+}
+
 /**
- * Stream a chat completion from the Pollinations API.
- * Uses fetch + ReadableStream to parse SSE chunks.
+ * Stream a chat completion from the Pollinations API (OpenAI-compatible SSE).
  *
- * @param apiKey   - user's API key
- * @param payload  - OpenAI-compatible chat completions payload
- * @param onChunk  - called with each text delta as it arrives
- * @param onDone   - called when stream ends, with final usage data
- * @param signal   - optional AbortSignal to cancel the stream
+ * The initial connection is retried on transient errors (429/5xx); the stream
+ * itself is never retried mid-flight. The SSE parser tolerates spacing variants
+ * (`data:[DONE]`), CRLF line endings, and reasoning deltas, and always releases
+ * the reader on exit.
  */
 export async function streamGeneration(
   apiKey: string,
   payload: ChatCompletionPayload,
-  onChunk: (text: string) => void,
-  onDone: (usage?: StreamDelta['usage'], userTier?: string) => void,
-  signal?: AbortSignal,
+  handlers: StreamHandlers,
 ): Promise<void> {
+  const { onContent, onReasoning, onDone, signal } = handlers;
+
+  const temperature =
+    payload.temperature != null
+      ? Math.max(0, Math.min(2, payload.temperature)) // clamp to documented 0–2
+      : undefined;
+
   const body = {
     ...payload,
+    temperature,
     stream: true,
     stream_options: { include_usage: true },
   };
 
-  const res = await fetch(`${BASE}/v1/chat/completions`, {
-    method: 'POST',
-    headers: headers(apiKey),
-    body: JSON.stringify(body),
-    signal,
-  });
+  // Retry only the INITIAL connect, and only on retryable HTTP statuses (429/5xx);
+  // never re-send on a network error (the POST may already be generating).
+  const res = await withRetry(
+    () =>
+      safeFetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: headers(apiKey),
+        body: JSON.stringify(body),
+        signal,
+      }),
+    { retryNetworkErrors: false },
+  );
 
   if (!res.ok) {
     const errBody = await res.json().catch(() => null);
-    const code = errBody?.error?.code ?? '';
-    const msg = errBody?.error?.message ?? `HTTP ${res.status}`;
-    throw new PollinationsError(msg, res.status, code);
+    throw new PollinationsError(
+      parseApiError(errBody, `Generation failed (HTTP ${res.status}).`),
+      res.status,
+      errBody?.error?.code ?? '',
+    );
   }
 
-  // Validate that we got a streaming response, not a JSON error with 200
+  // Guard against a JSON error returned with a 200 status (not an SSE stream).
   const contentType = res.headers.get('content-type') ?? '';
-  if (contentType.includes('application/json') && !contentType.includes('stream')) {
+  if (contentType.includes('application/json') && !contentType.includes('event-stream')) {
     const errBody = await res.json().catch(() => null);
-    const msg = errBody?.error?.message ?? 'Model does not support text streaming';
-    throw new PollinationsError(msg, 200, errBody?.error?.code ?? 'unsupported_model');
+    throw new PollinationsError(
+      parseApiError(errBody, 'This model does not support text streaming.'),
+      200,
+      errBody?.error?.code ?? 'unsupported_model',
+    );
   }
 
   const reader = res.body?.getReader();
@@ -397,36 +553,52 @@ export async function streamGeneration(
   let lastUsage: StreamDelta['usage'] | undefined;
   let lastTier: string | undefined;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
+  // Parse a single `data:` line; returns true if it was the [DONE] sentinel.
+  const handleLine = (raw: string): boolean => {
+    const line = raw.replace(/\r$/, '').trim();
+    if (!line || line.startsWith(':') || !line.startsWith('data:')) return false;
+    const data = line.slice(5).trimStart(); // tolerate "data:" and "data: "
+    if (data === '[DONE]') return true;
+    try {
+      const json: StreamDelta = JSON.parse(data);
+      if (json.usage) lastUsage = json.usage;
+      if (json.user_tier) lastTier = json.user_tier;
+      const delta = json.choices?.[0]?.delta;
+      if (delta?.content) onContent(delta.content);
+      const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+      if (reasoning && onReasoning) onReasoning(reasoning);
+    } catch {
+      // skip malformed chunks
+    }
+    return false;
+  };
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === ':') continue;
-      if (trimmed === 'data: [DONE]') {
-        onDone(lastUsage, lastTier);
-        return;
-      }
-      if (trimmed.startsWith('data: ')) {
-        try {
-          const json: StreamDelta = JSON.parse(trimmed.slice(6));
-          if (json.usage) lastUsage = json.usage;
-          if (json.user_tier) lastTier = json.user_tier;
-          const delta = json.choices?.[0]?.delta?.content;
-          if (delta) onChunk(delta);
-        } catch {
-          // skip malformed chunks
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (handleLine(line)) {
+          onDone(lastUsage, lastTier);
+          return;
         }
       }
     }
+    // Flush any bytes the decoder retained (incomplete trailing multibyte char).
+    buffer += decoder.decode();
+    // Flush a trailing event with no final newline.
+    if (buffer && handleLine(buffer)) {
+      onDone(lastUsage, lastTier);
+      return;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
   }
 
-  // If we exit without [DONE], still call onDone
+  // Exited without an explicit [DONE] — still finalize.
   onDone(lastUsage, lastTier);
 }
 
@@ -445,7 +617,7 @@ export async function generateImage(
     ),
   });
   const url = `${BASE}/image/${encodeURIComponent(prompt)}?${params}`;
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (!res.ok) {
@@ -499,7 +671,7 @@ export async function generateVideo(
   });
   // Video models use the same /image/ endpoint on Pollinations
   const url = `${BASE}/image/${encodeURIComponent(prompt)}?${params}`;
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (!res.ok) {
@@ -543,7 +715,7 @@ export async function generateAudio(
   voice = 'alloy',
   model = 'openai-audio',
 ): Promise<Blob> {
-  const res = await fetch(`${BASE}/v1/audio/speech`, {
+  const res = await safeFetch(`${BASE}/v1/audio/speech`, {
     method: 'POST',
     headers: headers(apiKey),
     body: JSON.stringify({
@@ -579,10 +751,11 @@ export async function generateAudioDirect(
   if (options.voice) params.set('voice', options.voice);
   if (options.duration) params.set('duration', String(options.duration));
   if (options.instrumental !== undefined) params.set('instrumental', String(options.instrumental));
-  params.set('key', apiKey);
 
+  // Send the key via the Authorization header — never the query string
+  // (query params leak into logs, history, and Referer headers).
   const url = `${BASE}/audio/${encodeURIComponent(text)}?${params}`;
-  const res = await fetch(url);
+  const res = await safeFetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
   if (!res.ok) {
     const ct = res.headers.get('content-type') ?? '';
     if (ct.includes('application/json')) {
@@ -593,6 +766,45 @@ export async function generateAudioDirect(
     throw new PollinationsError(`Audio generation failed: ${res.status}`, res.status, '');
   }
   return res.blob();
+}
+
+// ─── Transcription (speech-to-text) ──────────────────────────────
+
+/**
+ * Transcribe an audio file to text via POST /v1/audio/transcriptions
+ * (OpenAI-compatible, multipart/form-data). Used by STT models like whisper,
+ * scribe, universal-2 and universal-3-pro.
+ */
+export async function transcribeAudio(
+  apiKey: string,
+  file: Blob,
+  model: string,
+  filename = 'audio',
+): Promise<string> {
+  const form = new FormData();
+  form.append('file', file, filename);
+  form.append('model', model);
+
+  // Do NOT set Content-Type — the browser adds the multipart boundary.
+  const res = await safeFetch(`${BASE}/v1/audio/transcriptions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => null);
+    throw new PollinationsError(
+      parseApiError(errBody, `Transcription failed (HTTP ${res.status}).`),
+      res.status,
+      typeof errBody?.error === 'object' ? errBody?.error?.code ?? '' : '',
+    );
+  }
+  const ct = res.headers.get('content-type') ?? '';
+  if (ct.includes('application/json')) {
+    const data = await res.json().catch(() => null);
+    return String(data?.text ?? data?.transcript ?? '').trim();
+  }
+  return (await res.text()).trim();
 }
 
 // ─── Parse API errors (handles both {error:{message}} and {error:string, message:string}) ──

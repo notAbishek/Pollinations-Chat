@@ -10,8 +10,9 @@
 
 import { useState } from 'react';
 import type { AuthState } from '../types';
-import { validateApiKey, getProfile } from '../lib/pollinations';
+import { validateApiKey, getProfile, PollinationsError } from '../lib/pollinations';
 import { saveApiKey } from '../lib/storage';
+import { isPaidTier } from '../lib/tier';
 
 const AUTHORIZE_URL = 'https://enter.pollinations.ai/authorize';
 
@@ -68,10 +69,10 @@ export default function AuthScreen({ onAuth, autoAuthError }: AuthScreenProps) {
         const profile = await getProfile(trimmed);
         tier = profile.tier;
         nextResetAt = profile.nextResetAt ?? null;
-        isPro = ['seed', 'flower', 'nectar', 'router'].includes(tier);
+        isPro = isPaidTier(tier); // only flower/nectar are paid
       } catch {
-        // If profile fetch fails (permissions), use key info
-        isPro = keyInfo.type === 'secret';
+        // Profile unavailable — cannot confirm a paid tier, so default to free.
+        isPro = false;
       }
 
       // Step 3: Save key and enter app
@@ -85,10 +86,14 @@ export default function AuthScreen({ onAuth, autoAuthError }: AuthScreenProps) {
         nextResetAt,
       });
     } catch (err) {
-      if (err instanceof Error && err.message.includes('internet')) {
-        setError('Unable to connect. Please check your internet connection.');
-      } else if (err instanceof Error && err.message.includes('expired')) {
-        setError('Your API key has expired. Please sign in again.');
+      if (err instanceof PollinationsError) {
+        if (err.code === 'network_error' || err.status === 0) {
+          setError('Unable to connect. Please check your internet connection.');
+        } else if (err.code === 'invalid_key' || err.status === 401) {
+          setError('That API key is invalid or expired. Please check it and try again.');
+        } else {
+          setError(err.message || 'Unable to validate your API key. Please try again.');
+        }
       } else {
         setError('Unable to validate your API key. Please try again.');
       }
@@ -100,28 +105,28 @@ export default function AuthScreen({ onAuth, autoAuthError }: AuthScreenProps) {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-md animate-slide-up">
         {/* Logo / title */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-card border border-border mb-4">
-            <svg className="w-8 h-8 text-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-gradient mb-4 shadow-[0_8px_30px_hsl(var(--primary)/0.4)]">
+            <svg className="w-8 h-8 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" strokeLinecap="round" />
               <path d="M8 10h.01M16 10h.01M9 16s1.5 2 3 2 3-2 3-2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-foreground">Pollinations Chat</h1>
+          <h1 className="text-2xl font-bold text-brand-gradient">Pollinations Chat</h1>
           <p className="text-sm text-muted-foreground mt-2">
             Sign in to get started
           </p>
         </div>
 
         {/* Sign in card */}
-        <div className="bg-card rounded-lg border border-border p-6 shadow-lg">
+        <div className="bg-card rounded-2xl border border-border p-6 shadow-xl">
           {/* Primary: Sign in with Pollinations (BYOP OAuth) */}
           <button
             onClick={handleSignInWithPollinations}
             disabled={loading}
-            className="w-full py-3 px-4 bg-primary text-primary-foreground font-medium rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+            className="w-full py-3 px-4 bg-brand-gradient text-white font-medium rounded-lg hover:opacity-95 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity flex items-center justify-center gap-2 shadow-[0_4px_16px_hsl(var(--primary)/0.35)]"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" strokeLinecap="round" />

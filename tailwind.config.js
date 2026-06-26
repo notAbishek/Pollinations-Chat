@@ -38,6 +38,22 @@ export default {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        success: {
+          DEFAULT: 'hsl(var(--success))',
+          foreground: 'hsl(var(--success-foreground))',
+        },
+        warning: {
+          DEFAULT: 'hsl(var(--warning))',
+          foreground: 'hsl(var(--warning-foreground))',
+        },
+        accent2: {
+          DEFAULT: 'hsl(var(--accent2))',
+          foreground: 'hsl(var(--accent2-foreground))',
+        },
+        accent3: {
+          DEFAULT: 'hsl(var(--accent3))',
+          foreground: 'hsl(var(--accent3-foreground))',
+        },
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],

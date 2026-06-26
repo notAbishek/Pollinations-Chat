@@ -3,8 +3,10 @@
  */
 
 import { useState, useRef, type ChangeEvent } from 'react';
+import { motion } from 'motion/react';
 import type { AppSettings, ChatSession } from '../types';
 import { exportJSON, exportMarkdown, downloadFile, importJSON, importMarkdown } from '../lib/exportImport';
+import ThemeToggle from './ThemeToggle';
 
 interface SettingsProps {
   settings: AppSettings;
@@ -76,8 +78,20 @@ export default function Settings({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-40 p-2 sm:p-4">
-      <div className="bg-card border border-border rounded-lg w-full max-w-lg max-h-[92vh] sm:max-h-[80vh] overflow-y-auto p-4 sm:p-6 shadow-xl">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-40 p-2 sm:p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-card border border-border rounded-2xl w-full max-w-lg max-h-[92vh] sm:max-h-[80vh] overflow-y-auto p-4 sm:p-6 shadow-2xl"
+      >
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-lg font-semibold text-foreground">Settings</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
@@ -85,6 +99,18 @@ export default function Settings({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
+        </div>
+
+        {/* Appearance */}
+        <div className="mb-6">
+          <h3 className="text-sm font-medium text-foreground mb-3">Appearance</h3>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-sm text-foreground">Theme</span>
+              <p className="text-xs text-muted-foreground">Light, dark, or follow your system.</p>
+            </div>
+            <ThemeToggle variant="segmented" />
+          </div>
         </div>
 
         {/* Toggles */}
@@ -257,22 +283,22 @@ export default function Settings({
         </div>
 
         {/* Warning */}
-        <div className="mb-6 p-3 bg-secondary border border-yellow-900 rounded-md">
-          <p className="text-xs text-yellow-500">
-            <strong>DATABASE IS NOT AVAILABLE</strong> — Chats are stored locally only.
-            If you clear your browser, data will be lost. Use Export to backup.
+        <div className="mb-6 p-3 bg-warning/10 border border-warning/30 rounded-lg">
+          <p className="text-xs text-warning">
+            <strong>Local storage only</strong> — chats live in this browser. Clearing
+            browser data will erase them, so use Export to keep a backup.
           </p>
         </div>
 
         {/* Logout */}
         <button
           onClick={onLogout}
-          className="w-full py-2.5 border border-destructive text-destructive rounded-md hover:bg-destructive/10 transition-colors text-sm"
+          className="w-full py-2.5 border border-destructive text-destructive rounded-lg hover:bg-destructive/10 transition-colors text-sm"
         >
           Log out (clear API key)
         </button>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 

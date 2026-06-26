@@ -22,7 +22,7 @@ export default function ModelInfoPanel({
       <ModelDetailPopup model={model} currentInputTokens={currentInputTokens} />
 
       {model.paidOnly && (
-        <span className="text-[10px] bg-accent text-accent-foreground px-1.5 py-0.5 rounded-full font-medium hidden sm:inline">
+        <span className="text-[10px] bg-brand-gradient text-white px-1.5 py-0.5 rounded-full font-medium hidden sm:inline">
           PRO
         </span>
       )}
@@ -44,7 +44,7 @@ function CapBadge({
   return (
     <span
       className={`inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors ${active
-        ? 'bg-accent text-accent-foreground'
+        ? 'bg-primary/15 text-primary'
         : 'bg-transparent text-muted-foreground/40'
         }`}
       title={label}
